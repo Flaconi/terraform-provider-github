@@ -8,6 +8,11 @@ Terraform Provider GitHub
 - Website: https://www.terraform.io
 - Mailing list: [Google Groups](http://groups.google.com/group/terraform-tool)
 
+## Important
+
+This is a flaconi flavoured provider based on [integrations/github](https://github.com/integrations/terraform-provider-github). See our documentation here **[FLACONI.md](FLACONI.md)**
+
+
 ## Requirements
 
 -	[Terraform](https://www.terraform.io/downloads.html) 0.10.x
