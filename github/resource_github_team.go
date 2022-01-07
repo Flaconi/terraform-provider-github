@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/go-github/v39/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/customdiff"
@@ -150,6 +151,35 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 		ctx = context.WithValue(ctx, ctxEtag, d.Get("etag").(string))
 	}
 
+	/* Flaconi Code start */
+	log.Printf("[DEBUG] Reading team: %s", d.Id())
+	team, resp, err := client.Teams.GetTeamByID(ctx, orgId, id)
+	for i := 0; i < 10; i++ {
+		if err != nil {
+			if ghErr, ok := err.(*github.ErrorResponse); ok {
+				if ghErr.Response.StatusCode == http.StatusNotModified {
+					return nil
+				}
+				if ghErr.Response.StatusCode == http.StatusNotFound {
+					log.Printf("[WARN] Removing team %s from state because it no longer exists in GitHub",
+						d.Id())
+					d.SetId("")
+
+					log.Printf("[WARN] Flaconi-Add: Retry Team Read on 404 (%s/10)", i)
+					time.Sleep(5 * time.Second)
+					team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
+					continue
+				}
+				log.Printf("[WARN] Flaconi-Add: Retry Team Read on error (%s/10)", i)
+				time.Sleep(5 * time.Second)
+				team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
+				continue
+			}
+			return err
+		}
+	}
+	/* Flaconi Code end */
+	/* Original Code start
 	log.Printf("[DEBUG] Reading team: %s", d.Id())
 	team, resp, err := client.Teams.GetTeamByID(ctx, orgId, id)
 	if err != nil {
@@ -166,6 +196,7 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 		}
 		return err
 	}
+	Original Code end */
 
 	d.Set("etag", resp.Header.Get("ETag"))
 	d.Set("description", team.GetDescription())
@@ -198,6 +229,24 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 		Description: github.String(d.Get("description").(string)),
 		Privacy:     github.String(d.Get("privacy").(string)),
 	}
+	/* Flaconi Code start */
+	if parentTeamIdString, ok := d.GetOk("parent_team_id"); ok {
+		teamId, err := getTeamID(parentTeamIdString.(string), meta)
+		for i := 0; i < 10; i++ {
+			if err != nil {
+				log.Printf("[WARN] Flaconi-Add: Retrying to fetch parent team ID (%s/10)", i)
+				time.Sleep(5 * time.Second)
+				teamId, err = getTeamID(parentTeamIdString.(string), meta)
+				continue
+			}
+		}
+		if err != nil {
+			return err
+		}
+		editedTeam.ParentTeamID = &teamId
+	}
+	/* Flaconi Code end */
+	/* Original Code start
 	if parentTeamIdString, ok := d.GetOk("parent_team_id"); ok {
 		teamId, err := getTeamID(parentTeamIdString.(string), meta)
 		if err != nil {
@@ -205,6 +254,7 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 		}
 		editedTeam.ParentTeamID = &teamId
 	}
+	Original Code end */
 
 	teamId, err := strconv.ParseInt(d.Id(), 10, 64)
 	if err != nil {
