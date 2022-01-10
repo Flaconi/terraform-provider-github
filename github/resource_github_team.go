@@ -181,7 +181,7 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	/*
-		Slug-name spefici (as opposed to using team ID):
+		Slug-name specific (as opposed to using team ID):
 		When using slug-name to read GitHub teams it could be that another parallel thread of TF
 		(when looping through a module or resource) still needs to apply changes (rename the team name)
 		and thus it could be that we don't find it right away.
