@@ -263,7 +263,7 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	if parentTeamIdString, ok := d.GetOk("parent_team_id"); ok {
 		/*
-			Slug-name spefici (as opposed to using team ID):
+			Slug-name specific (as opposed to using team ID):
 			When updating nested teams via Terraform by looping through a module or resource
 			the parent team might not have been updated by a new slug-name yet
 			(in "terraform apply" parallel runs), so we are giving it some time to create the parent
