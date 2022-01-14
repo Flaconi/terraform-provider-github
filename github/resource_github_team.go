@@ -117,7 +117,7 @@ func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
 		for i := 0; i < github_team_api_retry; i++ {
 			// Try again on error
 			if err != nil {
-				log.Printf("[DEBUG] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
+				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
 				teamId, err = getTeamID(parentTeamIdString.(string), meta)
 				continue
@@ -199,12 +199,12 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 				// When using slug-name instead of ID, the new team name might not have been changed
 				// so we need to include this in the loop.
 				if ghErr.Response.StatusCode == http.StatusNotFound {
-					log.Printf("[DEBUG] Looking up team: Retry on 404 (%d/%d)", i, github_team_api_retry)
+					log.Printf("[WARN] Looking up team: Retry on 404 (%d/%d)", i, github_team_api_retry)
 					time.Sleep(github_team_api_wait * time.Second)
 					team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
 					continue
 				}
-				log.Printf("[DEBUG] Looking up team: Retry on error (%d/%d)", i, github_team_api_retry)
+				log.Printf("[WARN] Looking up team: Retry on error (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
 				team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
 				continue
@@ -274,7 +274,7 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 		for i := 0; i < github_team_api_retry; i++ {
 			// Try again on error
 			if err != nil {
-				log.Printf("[DEBUG] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
+				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
 				teamId, err = getTeamID(parentTeamIdString.(string), meta)
 				continue
