@@ -21,7 +21,7 @@ a parent team could have been removed or various other parallel issues.
 To mitigate this, we're simply retrying the API to double check its actual state.
 See their corresponding for loops for further description.
 */
-const github_team_api_retry = 20
+const github_team_api_retry = 30
 const github_team_api_wait = 5
 
 func resourceGithubTeam() *schema.Resource {
@@ -195,6 +195,11 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 			if ghErr, ok := err.(*github.ErrorResponse); ok {
 				if ghErr.Response.StatusCode == http.StatusNotModified {
 					return nil
+				}
+				// HTTP 422 (GH Response Validation Failed)
+				// This is a valid error and we should break the loop here
+				if ghErr.Response.StatusCode == http.StatusUnprocessableEntity {
+					return err
 				}
 				// When using slug-name instead of ID, the new team name might not have been changed
 				// so we need to include this in the loop.
