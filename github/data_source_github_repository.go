@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 
+	"github.com/google/go-github/v47/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 )
 
@@ -25,6 +27,11 @@ func dataSourceGithubRepository() *schema.Resource {
 				Optional:      true,
 				Computed:      true,
 				ConflictsWith: []string{"full_name"},
+			},
+			"only_protected_branches": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
 			},
 
 			"description": {
@@ -75,6 +82,22 @@ func dataSourceGithubRepository() *schema.Resource {
 			},
 			"allow_auto_merge": {
 				Type:     schema.TypeBool,
+				Computed: true,
+			},
+			"squash_merge_commit_title": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"squash_merge_commit_message": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"merge_commit_title": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"merge_commit_message": {
+				Type:     schema.TypeString,
 				Computed: true,
 			},
 			"default_branch": {
@@ -199,12 +222,18 @@ func dataSourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) er
 	}
 
 	if repoName == "" {
-		return fmt.Errorf("One of %q or %q has to be provided", "full_name", "name")
+		return fmt.Errorf("one of %q or %q has to be provided", "full_name", "name")
 	}
 
-	log.Printf("[DEBUG] Reading GitHub repository %s/%s", owner, repoName)
 	repo, _, err := client.Repositories.Get(context.TODO(), owner, repoName)
 	if err != nil {
+		if err, ok := err.(*github.ErrorResponse); ok {
+			if err.Response.StatusCode == http.StatusNotFound {
+				log.Printf("[DEBUG] Missing GitHub repository %s/%s", owner, repoName)
+				d.SetId("")
+				return nil
+			}
+		}
 		return err
 	}
 
@@ -221,6 +250,10 @@ func dataSourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) er
 	d.Set("allow_squash_merge", repo.GetAllowSquashMerge())
 	d.Set("allow_rebase_merge", repo.GetAllowRebaseMerge())
 	d.Set("allow_auto_merge", repo.GetAllowAutoMerge())
+	d.Set("squash_merge_commit_title", repo.GetSquashMergeCommitTitle())
+	d.Set("squash_merge_commit_message", repo.GetSquashMergeCommitMessage())
+	d.Set("merge_commit_title", repo.GetMergeCommitTitle())
+	d.Set("merge_commit_message", repo.GetMergeCommitMessage())
 	d.Set("has_downloads", repo.GetHasDownloads())
 	d.Set("full_name", repo.GetFullName())
 	d.Set("default_branch", repo.GetDefaultBranch())
@@ -234,7 +267,12 @@ func dataSourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) er
 	d.Set("repo_id", repo.GetID())
 	d.Set("has_projects", repo.GetHasProjects())
 
-	branches, _, err := client.Repositories.ListBranches(context.TODO(), owner, repoName, nil)
+	onlyProtectedBranches := d.Get("only_protected_branches").(bool)
+	listBranchOptions := &github.BranchListOptions{
+		Protected: &onlyProtectedBranches,
+	}
+
+	branches, _, err := client.Repositories.ListBranches(context.TODO(), owner, repoName, listBranchOptions)
 	if err != nil {
 		return err
 	}

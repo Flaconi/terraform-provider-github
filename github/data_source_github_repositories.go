@@ -2,9 +2,8 @@ package github
 
 import (
 	"context"
-	"log"
 
-	"github.com/google/go-github/v41/github"
+	"github.com/google/go-github/v47/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/validation"
 )
@@ -53,7 +52,6 @@ func dataSourceGithubRepositoriesRead(d *schema.ResourceData, meta interface{}) 
 		},
 	}
 
-	log.Printf("[DEBUG] Searching for GitHub repositories: %q", query)
 	fullNames, names, err := searchGithubRepositories(client, query, opt)
 	if err != nil {
 		return err
