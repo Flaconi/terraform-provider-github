@@ -25,8 +25,6 @@ The following arguments are supported:
 
 * `full_name` - (Optional) Full name of the repository (in `org/name` format).
 
-* `only_protected_branches` - (Optional). If true, the `branches` attributes will be populated only with protected branches. Default: `false`.
-
 ## Attributes Reference
 
 * `node_id` - the Node ID of the repository.
@@ -44,6 +42,8 @@ The following arguments are supported:
 * `has_projects` - Whether the repository has the GitHub Projects enabled.
 
 * `has_wiki` - Whether the repository has the GitHub Wiki enabled.
+
+* `is_template` - Whether the repository is a template repository.
 
 * `allow_merge_commit` - Whether the repository allows merge commits.
 
@@ -71,6 +71,8 @@ The following arguments are supported:
 
 * `topics` - The list of topics of the repository.
 
+* `template` - The repository source template configuration.
+
 * `html_url` - URL to the repository on the web.
 
 * `ssh_clone_url` - URL that can be provided to `git clone` to clone the repository via SSH.
@@ -84,7 +86,3 @@ The following arguments are supported:
 * `node_id` - GraphQL global node id for use with v4 API
 
 * `repo_id` - GitHub ID for the repository
-
-* `branches` - The list of this repository's branches. Each element of `branches` has the following attributes:
- * `name` - Name of the branch.
- * `protected` - Whether the branch is protected.

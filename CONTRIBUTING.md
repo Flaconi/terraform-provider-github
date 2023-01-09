@@ -6,6 +6,8 @@ Contributions to this project are [released](https://help.github.com/articles/gi
 
 Please note that this project is released with a [Contributor Code of Conduct](CODE_OF_CONDUCT.md). By participating in this project you agree to abide by its terms.
 
+Before submitting an issue or a pull request, please search the repository for existing content. Issues and PRs with multiple comments/experience reports increase the likelihood of a merged change.
+
 ## Submitting a pull request
 
 0. Fork and clone the repository
@@ -41,7 +43,7 @@ Once you have the repository cloned, there's a couple of additional steps you'll
   export GITHUB_ORGANIZATION=<name of an organization>
   ```
 - Build the project with `make build`
-- Try an example test run from the default (`master`) branch, like `TF_LOG=DEBUG TF_ACC=1 go test -v   ./... -run ^TestAccGithubRepositories`. All those tests should pass.
+- Try an example test run from the default (`main`) branch, like `TF_LOG=DEBUG TF_ACC=1 go test -v   ./... -run ^TestAccGithubRepositories`. All those tests should pass.
 
 ### Local Development Iteration
 
