@@ -7,6 +7,11 @@ Terraform Provider GitHub
 
 This project is used to read and write to/from GitHub (repositories, teams, files, etc.) using Terraform. Its Terraform Registry page can be found [here](https://registry.terraform.io/providers/integrations/github/).
 
+## Important
+
+This is a flaconi flavoured provider based on [integrations/github](https://github.com/integrations/terraform-provider-github). See our documentation here **[FLACONI.md](FLACONI.md)**
+
+
 ## Requirements
 
 -	[Terraform](https://www.terraform.io/downloads.html) 0.10.x
