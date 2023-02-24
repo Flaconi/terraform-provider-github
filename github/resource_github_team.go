@@ -59,7 +59,7 @@ func resourceGithubTeam() *schema.Resource {
 				ValidateFunc: validateValueFunc([]string{"secret", "closed"}),
 			},
 			"parent_team_id": {
-				Type:        schema.TypeInt,
+				Type:        schema.TypeString,
 				Optional:    true,
 				Description: "The ID or slug of parent team, if this is a nested team.",
 			},
