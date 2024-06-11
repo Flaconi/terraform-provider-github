@@ -4,8 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strconv"
 
-	"github.com/google/go-github/v50/github"
+	"github.com/google/go-github/v57/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 )
 
@@ -17,16 +18,28 @@ func resourceGithubTeamMembership() *schema.Resource {
 		Update: resourceGithubTeamMembershipCreateOrUpdate,
 		Delete: resourceGithubTeamMembershipDelete,
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			State: func(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+				teamIdString, username, err := parseTwoPartID(d.Id(), "team_id", "username")
+				if err != nil {
+					return nil, err
+				}
+
+				teamId, err := getTeamID(teamIdString, meta)
+				if err != nil {
+					return nil, err
+				}
+
+				d.SetId(buildTwoPartID(strconv.FormatInt(teamId, 10), username))
+				return []*schema.ResourceData{d}, nil
+			},
 		},
 
 		Schema: map[string]*schema.Schema{
 			"team_id": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				Description:  "The GitHub team id or the GitHub team slug.",
-				ValidateFunc: validateTeamIDFunc,
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: "The GitHub team id or the GitHub team slug.",
 			},
 			"username": {
 				Type:             schema.TypeString,

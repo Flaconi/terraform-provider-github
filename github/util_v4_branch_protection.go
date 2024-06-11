@@ -24,6 +24,15 @@ type ActorUser struct {
 
 type DismissalActorTypes struct {
 	Actor struct {
+		App  Actor     `graphql:"... on App"`
+		Team Actor     `graphql:"... on Team"`
+		User ActorUser `graphql:"... on User"`
+	}
+}
+
+type BypassForcePushActorTypes struct {
+	Actor struct {
+		App  Actor     `graphql:"... on App"`
 		Team Actor     `graphql:"... on Team"`
 		User ActorUser `graphql:"... on User"`
 	}
@@ -56,6 +65,9 @@ type BranchProtectionRule struct {
 	ReviewDismissalAllowances struct {
 		Nodes []DismissalActorTypes
 	} `graphql:"reviewDismissalAllowances(first: 100)"`
+	BypassForcePushAllowances struct {
+		Nodes []BypassForcePushActorTypes
+	} `graphql:"bypassForcePushAllowances(first: 100)"`
 	BypassPullRequestAllowances struct {
 		Nodes []BypassPullRequestActorTypes
 	} `graphql:"bypassPullRequestAllowances(first: 100)"`
@@ -86,6 +98,7 @@ type BranchProtectionResourceData struct {
 	AllowsForcePushes              bool
 	BlocksCreations                bool
 	BranchProtectionRuleID         string
+	BypassForcePushActorIDs        []string
 	BypassPullRequestActorIDs      []string
 	DismissesStaleReviews          bool
 	IsAdminEnforced                bool
@@ -237,6 +250,18 @@ func branchProtectionResourceData(d *schema.ResourceData, meta interface{}) (Bra
 		}
 	}
 
+	if v, ok := d.GetOk(PROTECTION_FORCE_PUSHES_BYPASSERS); ok {
+		bypassForcePushActorIDs := make([]string, 0)
+		vL := v.(*schema.Set).List()
+		for _, v := range vL {
+			bypassForcePushActorIDs = append(bypassForcePushActorIDs, v.(string))
+		}
+		if len(bypassForcePushActorIDs) > 0 {
+			data.BypassForcePushActorIDs = bypassForcePushActorIDs
+			data.AllowsForcePushes = false
+		}
+	}
+
 	if v, ok := d.GetOk(PROTECTION_LOCK_BRANCH); ok {
 		data.LockBranch = v.(bool)
 	}
@@ -293,6 +318,19 @@ func branchProtectionResourceDataActors(d *schema.ResourceData, meta interface{}
 			data.RestrictsPushes = true
 		}
 	}
+
+	if v, ok := d.GetOk(PROTECTION_FORCE_PUSHES_BYPASSERS); ok {
+		bypassForcePushActorIDs := make([]string, 0)
+		vL := v.(*schema.Set).List()
+		for _, v := range vL {
+			bypassForcePushActorIDs = append(bypassForcePushActorIDs, v.(string))
+		}
+		if len(bypassForcePushActorIDs) > 0 {
+			data.BypassForcePushActorIDs = bypassForcePushActorIDs
+			data.AllowsForcePushes = false
+		}
+	}
+
 	return data, nil
 }
 
@@ -303,7 +341,7 @@ func setDismissalActorIDs(actors []DismissalActorTypes, data BranchProtectionRes
 	for _, a := range actors {
 		IsID := false
 		for _, v := range data.ReviewDismissalActorIDs {
-			if (a.Actor.Team.ID != nil && a.Actor.Team.ID.(string) == v) || (a.Actor.User.ID != nil && a.Actor.User.ID.(string) == v) {
+			if (a.Actor.Team.ID != nil && a.Actor.Team.ID.(string) == v) || (a.Actor.User.ID != nil && a.Actor.User.ID.(string) == v) || (a.Actor.App.ID != nil && a.Actor.App.ID.(string) == v) {
 				dismissalActors = append(dismissalActors, v)
 				IsID = true
 				break
@@ -316,10 +354,45 @@ func setDismissalActorIDs(actors []DismissalActorTypes, data BranchProtectionRes
 			}
 			if a.Actor.User.Login != "" {
 				dismissalActors = append(dismissalActors, "/"+string(a.Actor.User.Login))
+				continue
+			}
+			if a.Actor.App != (Actor{}) {
+				dismissalActors = append(dismissalActors, a.Actor.App.ID.(string))
 			}
 		}
 	}
 	return dismissalActors
+}
+
+func setBypassForcePushActorIDs(actors []BypassForcePushActorTypes, data BranchProtectionResourceData, meta interface{}) []string {
+	bypassActors := make([]string, 0, len(actors))
+
+	orgName := meta.(*Owner).name
+
+	for _, a := range actors {
+		IsID := false
+		for _, v := range data.BypassForcePushActorIDs {
+			if (a.Actor.Team.ID != nil && a.Actor.Team.ID.(string) == v) || (a.Actor.User.ID != nil && a.Actor.User.ID.(string) == v) || (a.Actor.App.ID != nil && a.Actor.App.ID.(string) == v) {
+				bypassActors = append(bypassActors, v)
+				IsID = true
+				break
+			}
+		}
+		if !IsID {
+			if a.Actor.Team.Slug != "" {
+				bypassActors = append(bypassActors, orgName+"/"+string(a.Actor.Team.Slug))
+				continue
+			}
+			if a.Actor.User.Login != "" {
+				bypassActors = append(bypassActors, "/"+string(a.Actor.User.Login))
+				continue
+			}
+			if a.Actor.App != (Actor{}) {
+				bypassActors = append(bypassActors, a.Actor.App.ID.(string))
+			}
+		}
+	}
+	return bypassActors
 }
 
 func setBypassPullRequestActorIDs(actors []BypassPullRequestActorTypes, data BranchProtectionResourceData, meta interface{}) []string {
@@ -343,6 +416,7 @@ func setBypassPullRequestActorIDs(actors []BypassPullRequestActorTypes, data Bra
 			}
 			if a.Actor.User.Login != "" {
 				bypassActors = append(bypassActors, "/"+string(a.Actor.User.Login))
+				continue
 			}
 			if a.Actor.App != (Actor{}) {
 				bypassActors = append(bypassActors, a.Actor.App.ID.(string))
@@ -434,6 +508,16 @@ func setPushes(protection BranchProtectionRule, data BranchProtectionResourceDat
 	return pushActors
 }
 
+func setForcePushBypassers(protection BranchProtectionRule, data BranchProtectionResourceData, meta interface{}) []string {
+	if protection.AllowsForcePushes {
+		return nil
+	}
+	bypassForcePushAllowances := protection.BypassForcePushAllowances.Nodes
+	bypassForcePushActors := setBypassForcePushActorIDs(bypassForcePushAllowances, data, meta)
+
+	return bypassForcePushActors
+}
+
 func getBranchProtectionID(repoID githubv4.ID, pattern string, meta interface{}) (githubv4.ID, error) {
 	var query struct {
 		Node struct {
@@ -482,7 +566,7 @@ func getBranchProtectionID(repoID githubv4.ID, pattern string, meta interface{})
 		}
 	}
 
-	return nil, fmt.Errorf("could not find a branch protection rule with the pattern '%s'.", pattern)
+	return nil, fmt.Errorf("could not find a branch protection rule with the pattern '%s'", pattern)
 }
 
 func getActorIds(data []string, meta interface{}) ([]string, error) {

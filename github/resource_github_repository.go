@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/google/go-github/v50/github"
+	"github.com/google/go-github/v57/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/validation"
 )
@@ -34,7 +34,7 @@ func resourceGithubRepository() *schema.Resource {
 			"name": {
 				Type:         schema.TypeString,
 				Required:     true,
-				ValidateFunc: validation.StringLenBetween(1, 100),
+				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^[-a-zA-Z0-9_.]{1,100}$`), "must include only alphanumeric characters, underscores or hyphens and consist of 100 characters or less"),
 				Description:  "The name of the repository.",
 			},
 			"description": {
@@ -204,6 +204,12 @@ func resourceGithubRepository() *schema.Resource {
 				Default:     false,
 				Description: "Automatically delete head branch after a pull request is merged. Defaults to 'false'.",
 			},
+			"web_commit_signoff_required": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "Require contributors to sign off on web-based commits. Defaults to 'false'.",
+			},
 			"auto_init": {
 				Type:        schema.TypeBool,
 				Optional:    true,
@@ -247,7 +253,7 @@ func resourceGithubRepository() *schema.Resource {
 						"source": {
 							Type:        schema.TypeList,
 							MaxItems:    1,
-							Required:    true,
+							Optional:    true,
 							Description: "The source branch and directory for the rendered Pages site.",
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
@@ -264,6 +270,13 @@ func resourceGithubRepository() *schema.Resource {
 									},
 								},
 							},
+						},
+						"build_type": {
+							Type:         schema.TypeString,
+							Optional:     true,
+							Default:      "legacy",
+							Description:  "The type the page should be sourced.",
+							ValidateFunc: validateValueFunc([]string{"legacy", "workflow"}),
 						},
 						"cname": {
 							Type:        schema.TypeString,
@@ -295,6 +308,7 @@ func resourceGithubRepository() *schema.Resource {
 			"topics": {
 				Type:        schema.TypeSet,
 				Optional:    true,
+				Computed:    true,
 				Description: "The list of topics of the repository.",
 				Elem: &schema.Schema{
 					Type:         schema.TypeString,
@@ -345,6 +359,10 @@ func resourceGithubRepository() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
+			"primary_language": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
 			"template": {
 				Type:        schema.TypeList,
 				Optional:    true,
@@ -387,6 +405,7 @@ func resourceGithubRepository() *schema.Resource {
 				Description: " Set to 'true' to always suggest updating pull request branches.",
 			},
 		},
+		CustomizeDiff: customDiffFunction,
 	}
 }
 
@@ -456,7 +475,7 @@ func calculateSecurityAndAnalysis(d *schema.ResourceData) *github.SecurityAndAna
 }
 
 func resourceGithubRepositoryObject(d *schema.ResourceData) *github.Repository {
-	return &github.Repository{
+	repository := &github.Repository{
 		Name:                     github.String(d.Get("name").(string)),
 		Description:              github.String(d.Get("description").(string)),
 		Homepage:                 github.String(d.Get("homepage_url").(string)),
@@ -471,11 +490,8 @@ func resourceGithubRepositoryObject(d *schema.ResourceData) *github.Repository {
 		AllowSquashMerge:         github.Bool(d.Get("allow_squash_merge").(bool)),
 		AllowRebaseMerge:         github.Bool(d.Get("allow_rebase_merge").(bool)),
 		AllowAutoMerge:           github.Bool(d.Get("allow_auto_merge").(bool)),
-		SquashMergeCommitTitle:   github.String(d.Get("squash_merge_commit_title").(string)),
-		SquashMergeCommitMessage: github.String(d.Get("squash_merge_commit_message").(string)),
-		MergeCommitTitle:         github.String(d.Get("merge_commit_title").(string)),
-		MergeCommitMessage:       github.String(d.Get("merge_commit_message").(string)),
 		DeleteBranchOnMerge:      github.Bool(d.Get("delete_branch_on_merge").(bool)),
+		WebCommitSignoffRequired: github.Bool(d.Get("web_commit_signoff_required").(bool)),
 		AutoInit:                 github.Bool(d.Get("auto_init").(bool)),
 		LicenseTemplate:          github.String(d.Get("license_template").(string)),
 		GitignoreTemplate:        github.String(d.Get("gitignore_template").(string)),
@@ -484,6 +500,26 @@ func resourceGithubRepositoryObject(d *schema.ResourceData) *github.Repository {
 		AllowUpdateBranch:        github.Bool(d.Get("allow_update_branch").(bool)),
 		SecurityAndAnalysis:      calculateSecurityAndAnalysis(d),
 	}
+
+	// only configure merge commit if we are in commit merge strategy
+	allowMergeCommit, ok := d.Get("allow_merge_commit").(bool)
+	if ok {
+		if allowMergeCommit {
+			repository.MergeCommitTitle = github.String(d.Get("merge_commit_title").(string))
+			repository.MergeCommitMessage = github.String(d.Get("merge_commit_message").(string))
+		}
+	}
+
+	// only configure squash commit if we are in squash merge strategy
+	allowSquashMerge, ok := d.Get("allow_squash_merge").(bool)
+	if ok {
+		if allowSquashMerge {
+			repository.SquashMergeCommitTitle = github.String(d.Get("squash_merge_commit_title").(string))
+			repository.SquashMergeCommitMessage = github.String(d.Get("squash_merge_commit_message").(string))
+		}
+	}
+
+	return repository
 }
 
 func resourceGithubRepositoryCreate(d *schema.ResourceData, meta interface{}) error {
@@ -586,8 +622,15 @@ func resourceGithubRepositoryCreate(d *schema.ResourceData, meta interface{}) er
 
 func resourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*Owner).v3client
+
 	owner := meta.(*Owner).name
 	repoName := d.Id()
+
+	// When the user has not authenticated the provider, AnonymousHTTPClient is used, therefore owner == "". In this
+	// case lookup the owner in the data, and use that, if present.
+	if explicitOwner, _, ok := resourceGithubParseFullName(d); ok && owner == "" {
+		owner = explicitOwner
+	}
 
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 	if !d.IsNewResource() {
@@ -613,6 +656,7 @@ func resourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) erro
 	d.Set("etag", resp.Header.Get("ETag"))
 	d.Set("name", repoName)
 	d.Set("description", repo.GetDescription())
+	d.Set("primary_language", repo.GetLanguage())
 	d.Set("homepage_url", repo.GetHomepage())
 	d.Set("private", repo.GetPrivate())
 	d.Set("visibility", repo.GetVisibility())
@@ -621,7 +665,6 @@ func resourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) erro
 	d.Set("has_projects", repo.GetHasProjects())
 	d.Set("has_wiki", repo.GetHasWiki())
 	d.Set("is_template", repo.GetIsTemplate())
-	d.Set("has_downloads", repo.GetHasDownloads())
 	d.Set("full_name", repo.GetFullName())
 	d.Set("default_branch", repo.GetDefaultBranch())
 	d.Set("html_url", repo.GetHTMLURL())
@@ -633,7 +676,6 @@ func resourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) erro
 	d.Set("topics", flattenStringList(repo.Topics))
 	d.Set("node_id", repo.GetNodeID())
 	d.Set("repo_id", repo.GetID())
-	d.Set("allow_update_branch", repo.GetAllowUpdateBranch())
 
 	// GitHub API doesn't respond following parameters when repository is archived
 	if !d.Get("archived").(bool) {
@@ -641,7 +683,10 @@ func resourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) erro
 		d.Set("allow_merge_commit", repo.GetAllowMergeCommit())
 		d.Set("allow_rebase_merge", repo.GetAllowRebaseMerge())
 		d.Set("allow_squash_merge", repo.GetAllowSquashMerge())
+		d.Set("allow_update_branch", repo.GetAllowUpdateBranch())
 		d.Set("delete_branch_on_merge", repo.GetDeleteBranchOnMerge())
+		d.Set("web_commit_signoff_required", repo.GetWebCommitSignoffRequired())
+		d.Set("has_downloads", repo.GetHasDownloads())
 		d.Set("merge_commit_message", repo.GetMergeCommitMessage())
 		d.Set("merge_commit_title", repo.GetMergeCommitTitle())
 		d.Set("squash_merge_commit_message", repo.GetSquashMergeCommitMessage())
@@ -718,7 +763,16 @@ func resourceGithubRepositoryUpdate(d *schema.ResourceData, meta interface{}) er
 	if d.HasChange("pages") && !d.IsNewResource() {
 		opts := expandPagesUpdate(d.Get("pages").([]interface{}))
 		if opts != nil {
-			_, err := client.Repositories.UpdatePages(ctx, owner, repoName, opts)
+			pages, res, err := client.Repositories.GetPagesInfo(ctx, owner, repoName)
+			if res.StatusCode != http.StatusNotFound && err != nil {
+				return err
+			}
+
+			if pages == nil {
+				_, _, err = client.Repositories.EnablePages(ctx, owner, repoName, &github.Pages{Source: opts.Source, BuildType: opts.BuildType})
+			} else {
+				_, err = client.Repositories.UpdatePages(ctx, owner, repoName, opts)
+			}
 			if err != nil {
 				return err
 			}
@@ -820,17 +874,29 @@ func expandPages(input []interface{}) *github.Pages {
 		return nil
 	}
 	pages := input[0].(map[string]interface{})
-	pagesSource := pages["source"].([]interface{})[0].(map[string]interface{})
 	source := &github.PagesSource{
-		Branch: github.String(pagesSource["branch"].(string)),
+		Branch: github.String("main"),
 	}
-	if v, ok := pagesSource["path"].(string); ok {
-		// To set to the root directory "/", leave source.Path unset
-		if v != "" && v != "/" {
-			source.Path = github.String(v)
+	if len(pages["source"].([]interface{})) == 1 {
+		if pagesSource, ok := pages["source"].([]interface{})[0].(map[string]interface{}); ok {
+			if v, ok := pagesSource["branch"].(string); ok {
+				source.Branch = github.String(v)
+			}
+			if v, ok := pagesSource["path"].(string); ok {
+				// To set to the root directory "/", leave source.Path unset
+				if v != "" && v != "/" {
+					source.Path = github.String(v)
+				}
+			}
 		}
 	}
-	return &github.Pages{Source: source}
+
+	var buildType *string
+	if v, ok := pages["build_type"].(string); ok {
+		buildType = github.String(v)
+	}
+
+	return &github.Pages{Source: source, BuildType: buildType}
 }
 
 func expandPagesUpdate(input []interface{}) *github.PagesUpdate {
@@ -847,18 +913,24 @@ func expandPagesUpdate(input []interface{}) *github.PagesUpdate {
 		update.CNAME = github.String(v)
 	}
 
+	// Only set the github.PagesUpdate BuildType field if the value is a non-empty string.
+	if v, ok := pages["build_type"].(string); ok && v != "" {
+		update.BuildType = github.String(v)
+	}
+
 	// To update the GitHub Pages source, the github.PagesUpdate Source field
 	// must include the branch name and optionally the subdirectory /docs.
 	// e.g. "master" or "master /docs"
-	pagesSource := pages["source"].([]interface{})[0].(map[string]interface{})
-	sourceBranch := pagesSource["branch"].(string)
-	sourcePath := ""
-	if v, ok := pagesSource["path"].(string); ok {
-		if v != "" && v != "/" {
+	// This is only necessary if the BuildType is "legacy".
+	if update.BuildType == nil || *update.BuildType == "legacy" {
+		pagesSource := pages["source"].([]interface{})[0].(map[string]interface{})
+		sourceBranch := pagesSource["branch"].(string)
+		sourcePath := ""
+		if v, ok := pagesSource["path"].(string); ok && v != "" {
 			sourcePath = v
 		}
+		update.Source = &github.PagesSource{Branch: &sourceBranch, Path: &sourcePath}
 	}
-	update.Source = &github.PagesSource{Branch: &sourceBranch, Path: &sourcePath}
 
 	return update
 }
@@ -874,6 +946,7 @@ func flattenPages(pages *github.Pages) []interface{} {
 
 	pagesMap := make(map[string]interface{})
 	pagesMap["source"] = []interface{}{sourceMap}
+	pagesMap["build_type"] = pages.GetBuildType()
 	pagesMap["url"] = pages.GetURL()
 	pagesMap["status"] = pages.GetStatus()
 	pagesMap["cname"] = pages.GetCNAME()
@@ -881,6 +954,42 @@ func flattenPages(pages *github.Pages) []interface{} {
 	pagesMap["html_url"] = pages.GetHTMLURL()
 
 	return []interface{}{pagesMap}
+}
+
+func flattenRepositoryLicense(repositorylicense *github.RepositoryLicense) []interface{} {
+	if repositorylicense == nil {
+		return []interface{}{}
+	}
+
+	licenseMap := make(map[string]interface{})
+	licenseMap["key"] = repositorylicense.GetLicense().GetKey()
+	licenseMap["name"] = repositorylicense.GetLicense().GetName()
+	licenseMap["url"] = repositorylicense.GetLicense().GetURL()
+	licenseMap["spdx_id"] = repositorylicense.GetLicense().GetSPDXID()
+	licenseMap["html_url"] = repositorylicense.GetLicense().GetHTMLURL()
+	licenseMap["featured"] = repositorylicense.GetLicense().GetFeatured()
+	licenseMap["description"] = repositorylicense.GetLicense().GetDescription()
+	licenseMap["implementation"] = repositorylicense.GetLicense().GetImplementation()
+	licenseMap["permissions"] = repositorylicense.GetLicense().GetPermissions()
+	licenseMap["conditions"] = repositorylicense.GetLicense().GetConditions()
+	licenseMap["limitations"] = repositorylicense.GetLicense().GetLimitations()
+	licenseMap["body"] = repositorylicense.GetLicense().GetBody()
+
+	repositorylicenseMap := make(map[string]interface{})
+	repositorylicenseMap["license"] = []interface{}{licenseMap}
+	repositorylicenseMap["name"] = repositorylicense.GetName()
+	repositorylicenseMap["path"] = repositorylicense.GetPath()
+	repositorylicenseMap["sha"] = repositorylicense.GetSHA()
+	repositorylicenseMap["size"] = repositorylicense.GetSize()
+	repositorylicenseMap["url"] = repositorylicense.GetURL()
+	repositorylicenseMap["html_url"] = repositorylicense.GetHTMLURL()
+	repositorylicenseMap["git_url"] = repositorylicense.GetGitURL()
+	repositorylicenseMap["download_url"] = repositorylicense.GetDownloadURL()
+	repositorylicenseMap["type"] = repositorylicense.GetType()
+	repositorylicenseMap["content"] = repositorylicense.GetContent()
+	repositorylicenseMap["encoding"] = repositorylicense.GetEncoding()
+
+	return []interface{}{repositorylicenseMap}
 }
 
 func flattenSecurityAndAnalysis(securityAndAnalysis *github.SecurityAndAnalysis) []interface{} {
@@ -906,4 +1015,31 @@ func flattenSecurityAndAnalysis(securityAndAnalysis *github.SecurityAndAnalysis)
 	}}
 
 	return []interface{}{securityAndAnalysisMap}
+}
+
+// In case full_name can be determined from the data, parses it into an org and repo name proper. For example,
+// resourceGithubParseFullName will return "myorg", "myrepo", true when full_name is "myorg/myrepo".
+func resourceGithubParseFullName(resourceDataLike interface {
+	GetOk(string) (interface{}, bool)
+}) (string, string, bool) {
+	x, ok := resourceDataLike.GetOk("full_name")
+	if !ok {
+		return "", "", false
+	}
+	s, ok := x.(string)
+	if !ok || s == "" {
+		return "", "", false
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func customDiffFunction(diff *schema.ResourceDiff, v interface{}) error {
+	if diff.HasChange("name") {
+		diff.SetNewComputed("full_name")
+	}
+	return nil
 }

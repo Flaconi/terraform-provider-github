@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/google/go-github/v50/github"
+	"github.com/google/go-github/v57/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/validation"
 )
@@ -110,6 +110,12 @@ func resourceGithubBranchProtectionV3() *schema.Resource {
 							Description: "The list of team slugs with dismissal access. Always use slug of the team, not its name. Each team already has to have access to the repository.",
 							Elem:        &schema.Schema{Type: schema.TypeString},
 						},
+						"dismissal_apps": {
+							Type:        schema.TypeSet,
+							Optional:    true,
+							Description: "The list of apps slugs with dismissal access. Always use slug of the app, not its name. Each app already has to have access to the repository.",
+							Elem:        &schema.Schema{Type: schema.TypeString},
+						},
 						"require_code_owner_reviews": {
 							Type:        schema.TypeBool,
 							Optional:    true,
@@ -121,6 +127,30 @@ func resourceGithubBranchProtectionV3() *schema.Resource {
 							Default:      1,
 							Description:  "Require 'x' number of approvals to satisfy branch protection requirements. If this is specified it must be a number between 0-6.",
 							ValidateFunc: validation.IntBetween(0, 6),
+						},
+						"bypass_pull_request_allowances": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"users": {
+										Type:     schema.TypeSet,
+										Optional: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+									"teams": {
+										Type:     schema.TypeSet,
+										Optional: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+									"apps": {
+										Type:     schema.TypeSet,
+										Optional: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+								},
+							},
 						},
 					},
 				},

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/go-github/v50/github"
+	"github.com/google/go-github/v57/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/shurcooL/githubv4"
@@ -31,7 +31,7 @@ func resourceGithubTeam() *schema.Resource {
 		Update: resourceGithubTeamUpdate,
 		Delete: resourceGithubTeamDelete,
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			State: resourceGithubTeamImport,
 		},
 
 		CustomizeDiff: customdiff.Sequence(
@@ -61,7 +61,26 @@ func resourceGithubTeam() *schema.Resource {
 			"parent_team_id": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "The ID or slug of parent team, if this is a nested team.",
+				Default:     "",
+				Description: "The ID or slug of the parent team, if this is a nested team.",
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					if d.Get("parent_team_id") == d.Get("parent_team_read_id") || d.Get("parent_team_id") == d.Get("parent_team_read_slug") {
+						return true
+					}
+					return false
+				},
+			},
+			"parent_team_read_id": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				Description: "The id of the parent team read in Github.",
+			},
+			"parent_team_read_slug": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				Description: "The id of the parent team read in Github.",
 			},
 			"ldap_dn": {
 				Type:        schema.TypeString,
@@ -117,20 +136,20 @@ func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
 		newTeam.LDAPDN = &ldapDN
 	}
 
-	if parentTeamIdString, ok := d.GetOk("parent_team_id"); ok {
+	if parentTeamID, ok := d.GetOk("parent_team_id"); ok {
 		/*
 			When creating nested teams via Terraform by looping through a module or resource
 			the parent team might not have been created yet (in "terraform apply" parallel runs),
 			so we are giving it some time to create the parent team and will repeatedly check
 			if the parent exists (has been created by another parallel run).
 		*/
-		teamId, err := getTeamID(parentTeamIdString.(string), meta)
+		teamId, err := getTeamID(parentTeamID.(string), meta)
 		for i := 0; i < github_team_api_retry; i++ {
 			// Try again on error
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
-				teamId, err = getTeamID(parentTeamIdString.(string), meta)
+				teamId, err = getTeamID(parentTeamID.(string), meta)
 				continue
 			}
 			// Exit loop on success
@@ -264,9 +283,13 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("name", team.GetName())
 	d.Set("privacy", team.GetPrivacy())
 	if parent := team.Parent; parent != nil {
-		d.Set("parent_team_id", strconv.FormatInt(parent.GetID(), 10))
+		d.Set("parent_team_id", strconv.FormatInt(team.Parent.GetID(), 10))
+		d.Set("parent_team_read_id", strconv.FormatInt(team.Parent.GetID(), 10))
+		d.Set("parent_team_read_slug", parent.Slug)
 	} else {
 		d.Set("parent_team_id", "")
+		d.Set("parent_team_read_id", "")
+		d.Set("parent_team_read_slug", "")
 	}
 	d.Set("ldap_dn", team.GetLDAPDN())
 	d.Set("slug", team.GetSlug())
@@ -284,14 +307,14 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	client := meta.(*Owner).v3client
 	orgId := meta.(*Owner).id
+	var removeParentTeam bool
 
 	editedTeam := github.NewTeam{
 		Name:        d.Get("name").(string),
 		Description: github.String(d.Get("description").(string)),
 		Privacy:     github.String(d.Get("privacy").(string)),
 	}
-
-	if parentTeamIdString, ok := d.GetOk("parent_team_id"); ok {
+	if parentTeamID, ok := d.GetOk("parent_team_id"); ok {
 		/*
 			Slug-name specific (as opposed to using team ID):
 			When updating nested teams via Terraform by looping through a module or resource
@@ -300,13 +323,13 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 			team and will repeatedly check if the parent exists
 			(has been created by another parallel run).
 		*/
-		teamId, err := getTeamID(parentTeamIdString.(string), meta)
+		teamId, err := getTeamID(parentTeamID.(string), meta)
 		for i := 0; i < github_team_api_retry; i++ {
 			// Try again on error
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
-				teamId, err = getTeamID(parentTeamIdString.(string), meta)
+				teamId, err = getTeamID(parentTeamID.(string), meta)
 				continue
 			}
 			// Exit loop on success
@@ -317,6 +340,9 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 			return err
 		}
 		editedTeam.ParentTeamID = &teamId
+		removeParentTeam = false
+	} else {
+		removeParentTeam = true
 	}
 
 	teamId, err := strconv.ParseInt(d.Id(), 10, 64)
@@ -325,7 +351,7 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 	}
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 
-	team, _, err := client.Teams.EditTeamByID(ctx, orgId, teamId, editedTeam, false)
+	team, _, err := client.Teams.EditTeamByID(ctx, orgId, teamId, editedTeam, removeParentTeam)
 	if err != nil {
 		return err
 	}
@@ -385,6 +411,18 @@ func resourceGithubTeamDelete(d *schema.ResourceData, meta interface{}) error {
 		}
 	}
 	return err
+}
+
+func resourceGithubTeamImport(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+	teamId, err := getTeamID(d.Id(), meta)
+	if err != nil {
+		return nil, err
+	}
+
+	d.SetId(strconv.FormatInt(teamId, 10))
+	d.Set("create_default_maintainer", false)
+
+	return []*schema.ResourceData{d}, nil
 }
 
 func removeDefaultMaintainer(teamSlug string, meta interface{}) error {

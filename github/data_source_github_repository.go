@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/go-github/v50/github"
+	"github.com/google/go-github/v57/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 )
 
@@ -70,6 +70,10 @@ func dataSourceGithubRepository() *schema.Resource {
 				Type:     schema.TypeBool,
 				Computed: true,
 			},
+			"fork": {
+				Type:     schema.TypeBool,
+				Computed: true,
+			},
 			"allow_merge_commit": {
 				Type:     schema.TypeBool,
 				Computed: true,
@@ -106,9 +110,124 @@ func dataSourceGithubRepository() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
+			"primary_language": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
 			"archived": {
 				Type:     schema.TypeBool,
 				Computed: true,
+			},
+			"repository_license": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"name": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"path": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"license": {
+							Type:     schema.TypeList,
+							Computed: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"key": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"name": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"url": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"spdx_id": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"html_url": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"featured": {
+										Type:     schema.TypeBool,
+										Computed: true,
+									},
+									"description": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"implementation": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"permissions": {
+										Type:     schema.TypeSet,
+										Computed: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+									"conditions": {
+										Type:     schema.TypeSet,
+										Computed: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+									"limitations": {
+										Type:     schema.TypeSet,
+										Computed: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+									"body": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+								},
+							},
+						},
+						"sha": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"size": {
+							Type:     schema.TypeInt,
+							Computed: true,
+						},
+						"url": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"html_url": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"git_url": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"download_url": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"type": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"content": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"encoding": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+					},
+				},
 			},
 			"pages": {
 				Type:     schema.TypeList,
@@ -130,6 +249,10 @@ func dataSourceGithubRepository() *schema.Resource {
 									},
 								},
 							},
+						},
+						"build_type": {
+							Type:     schema.TypeString,
+							Computed: true,
 						},
 						"cname": {
 							Type:     schema.TypeString,
@@ -251,6 +374,7 @@ func dataSourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) er
 	d.Set("has_discussions", repo.GetHasDiscussions())
 	d.Set("has_wiki", repo.GetHasWiki())
 	d.Set("is_template", repo.GetIsTemplate())
+	d.Set("fork", repo.GetFork())
 	d.Set("allow_merge_commit", repo.GetAllowMergeCommit())
 	d.Set("allow_squash_merge", repo.GetAllowSquashMerge())
 	d.Set("allow_rebase_merge", repo.GetAllowRebaseMerge())
@@ -262,6 +386,7 @@ func dataSourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) er
 	d.Set("has_downloads", repo.GetHasDownloads())
 	d.Set("full_name", repo.GetFullName())
 	d.Set("default_branch", repo.GetDefaultBranch())
+	d.Set("primary_language", repo.GetLanguage())
 	d.Set("html_url", repo.GetHTMLURL())
 	d.Set("ssh_clone_url", repo.GetSSHURL())
 	d.Set("svn_url", repo.GetSVNURL())
@@ -282,6 +407,18 @@ func dataSourceGithubRepositoryRead(d *schema.ResourceData, meta interface{}) er
 		}
 	} else {
 		d.Set("pages", flattenPages(nil))
+	}
+
+	if repo.License != nil {
+		repository_license, _, err := client.Repositories.License(context.TODO(), owner, repoName)
+		if err != nil {
+			return err
+		}
+		if err := d.Set("repository_license", flattenRepositoryLicense(repository_license)); err != nil {
+			return fmt.Errorf("error setting repository_license: %w", err)
+		}
+	} else {
+		d.Set("repository_license", flattenRepositoryLicense(nil))
 	}
 
 	if repo.TemplateRepository != nil {

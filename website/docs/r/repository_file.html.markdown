@@ -44,7 +44,7 @@ The following arguments are supported:
 
 * `content` - (Required) The file content.
 
-* `branch` - (Optional) Git branch (defaults to `main`).
+* `branch` - (Optional) Git branch (defaults to the repository's default branch).
   The branch must already exist, it will not be created if it does not already exist.
 
 * `commit_author` - (Optional) Committer author name to use. **NOTE:** GitHub app users may omit author and email information so GitHub can verify commits as the GitHub App. This maybe useful when a branch protection rule requires signed commits.
@@ -53,7 +53,7 @@ The following arguments are supported:
 
 * `commit_message` - (Optional) Commit message when adding or updating the managed file.
 
-* `overwrite_on_create` - (Optional) Enable overwriting existing files
+* `overwrite_on_create` - (Optional) Enable overwriting existing files. If set to `true` it will overwrite an existing file with the same name. If set to `false` it will fail if there is an existing file with the same name.
 
 ## Attributes Reference
 
@@ -62,6 +62,8 @@ The following additional attributes are exported:
 * `commit_sha` - The SHA of the commit that modified the file.
 
 * `sha` - The SHA blob of the file.
+
+* `ref` - The name of the commit/branch/tag.
 
 
 ## Import
@@ -72,7 +74,7 @@ Repository files can be imported using a combination of the `repo` and `file`, e
 $ terraform import github_repository_file.gitignore example/.gitignore
 ```
 
-To import a file from a branch other than main, append `:` and the branch name, e.g.
+To import a file from a branch other than the default branch, append `:` and the branch name, e.g.
 
 ```
 $ terraform import github_repository_file.gitignore example/.gitignore:dev

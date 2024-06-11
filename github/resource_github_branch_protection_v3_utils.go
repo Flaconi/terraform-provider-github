@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/google/go-github/v50/github"
-	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"log"
 	"strconv"
 	"strings"
+
+	"github.com/google/go-github/v57/github"
+	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 )
 
 func buildProtectionRequest(d *schema.ResourceData) (*github.ProtectionRequest, error) {
@@ -52,14 +53,16 @@ func flattenAndSetRequiredStatusChecks(d *schema.ResourceData, protection *githu
 		for _, c := range rsc.Contexts {
 			// Parse into contexts
 			contexts = append(contexts, c)
-			checks = append(contexts, c)
 		}
 
 		// Flatten checks
 		for _, chk := range rsc.Checks {
-			// Parse into contexts
-			contexts = append(contexts, chk.Context)
-			checks = append(contexts, fmt.Sprintf("%s:%d", chk.Context, chk.AppID))
+			// Parse into checks
+			if chk.AppID != nil {
+				checks = append(checks, fmt.Sprintf("%s:%d", chk.Context, *chk.AppID))
+			} else {
+				checks = append(checks, chk.Context)
+			}
 		}
 
 		return d.Set("required_status_checks", []interface{}{
@@ -122,10 +125,44 @@ func requireSignedCommitsUpdate(d *schema.ResourceData, meta interface{}) (err e
 	return err
 }
 
+func flattenBypassPullRequestAllowances(bpra *github.BypassPullRequestAllowances) []interface{} {
+	if bpra == nil {
+		return nil
+	}
+	users := make([]interface{}, 0, len(bpra.Users))
+	for _, u := range bpra.Users {
+		if u.Login != nil {
+			users = append(users, *u.Login)
+		}
+	}
+
+	teams := make([]interface{}, 0, len(bpra.Teams))
+	for _, t := range bpra.Teams {
+		if t.Slug != nil {
+			teams = append(teams, *t.Slug)
+		}
+	}
+
+	apps := make([]interface{}, 0, len(bpra.Apps))
+	for _, t := range bpra.Apps {
+		if t.Slug != nil {
+			apps = append(apps, *t.Slug)
+		}
+	}
+
+	return []interface{}{
+		map[string]interface{}{
+			"users": schema.NewSet(schema.HashString, users),
+			"teams": schema.NewSet(schema.HashString, teams),
+			"apps":  schema.NewSet(schema.HashString, apps),
+		},
+	}
+}
+
 func flattenAndSetRequiredPullRequestReviews(d *schema.ResourceData, protection *github.Protection) error {
 	rprr := protection.GetRequiredPullRequestReviews()
 	if rprr != nil {
-		var users, teams []interface{}
+		var users, teams, apps []interface{}
 		restrictions := rprr.GetDismissalRestrictions()
 
 		if restrictions != nil {
@@ -141,15 +178,25 @@ func flattenAndSetRequiredPullRequestReviews(d *schema.ResourceData, protection 
 					teams = append(teams, *t.Slug)
 				}
 			}
+			apps = make([]interface{}, 0, len(restrictions.Apps))
+			for _, t := range restrictions.Apps {
+				if t.Slug != nil {
+					apps = append(apps, *t.Slug)
+				}
+			}
 		}
+
+		bpra := flattenBypassPullRequestAllowances(rprr.GetBypassPullRequestAllowances())
 
 		return d.Set("required_pull_request_reviews", []interface{}{
 			map[string]interface{}{
 				"dismiss_stale_reviews":           rprr.DismissStaleReviews,
 				"dismissal_users":                 schema.NewSet(schema.HashString, users),
 				"dismissal_teams":                 schema.NewSet(schema.HashString, teams),
+				"dismissal_apps":                  schema.NewSet(schema.HashString, apps),
 				"require_code_owner_reviews":      rprr.RequireCodeOwnerReviews,
 				"required_approving_review_count": rprr.RequiredApprovingReviewCount,
+				"bypass_pull_request_allowances":  bpra,
 			},
 		})
 	}
@@ -229,15 +276,13 @@ func expandRequiredStatusChecks(d *schema.ResourceData) (*github.RequiredStatusC
 			for _, c := range checks {
 
 				// Expect a string of "context:app_id", allowing for the absence of "app_id"
-				parts := strings.SplitN(c, ":", 2)
+				index := strings.LastIndex(c, ":")
 				var cContext, cAppId string
-				switch len(parts) {
-				case 1:
-					cContext, cAppId = parts[0], ""
-				case 2:
-					cContext, cAppId = parts[0], parts[1]
-				default:
-					return nil, fmt.Errorf("Could not parse check '%s'. Expected `context:app_id` or `context`", c)
+				if index <= 0 {
+					// If there is no ":" or it's in the first position, there is no app_id.
+					cContext, cAppId = c, ""
+				} else {
+					cContext, cAppId = c[:index], c[index+1:]
 				}
 
 				var rscCheck *github.RequiredStatusCheck
@@ -245,7 +290,7 @@ func expandRequiredStatusChecks(d *schema.ResourceData) (*github.RequiredStatusC
 					// If we have a valid app_id, include it in the RSC
 					rscAppId, err := strconv.Atoi(cAppId)
 					if err != nil {
-						return nil, fmt.Errorf("Could not parse %v as valid app_id", cAppId)
+						return nil, fmt.Errorf("could not parse %v as valid app_id", cAppId)
 					}
 					rscAppId64 := int64(rscAppId)
 					rscCheck = &github.RequiredStatusCheck{Context: cContext, AppID: &rscAppId64}
@@ -292,10 +337,21 @@ func expandRequiredPullRequestReviews(d *schema.ResourceData) (*github.PullReque
 				drr.Teams = &teams
 			}
 
+			apps := expandNestedSet(m, "dismissal_apps")
+			if len(apps) > 0 {
+				drr.Apps = &apps
+			}
+
+			bpra, err := expandBypassPullRequestAllowances(m)
+			if err != nil {
+				return nil, err
+			}
+
 			rprr.DismissalRestrictionsRequest = drr
 			rprr.DismissStaleReviews = m["dismiss_stale_reviews"].(bool)
 			rprr.RequireCodeOwnerReviews = m["require_code_owner_reviews"].(bool)
 			rprr.RequiredApprovingReviewCount = m["required_approving_review_count"].(int)
+			rprr.BypassPullRequestAllowancesRequest = bpra
 		}
 
 		return rprr, nil
@@ -334,6 +390,36 @@ func expandRestrictions(d *schema.ResourceData) (*github.BranchRestrictionsReque
 	}
 
 	return nil, nil
+}
+
+func expandBypassPullRequestAllowances(m map[string]interface{}) (*github.BypassPullRequestAllowancesRequest, error) {
+	if m["bypass_pull_request_allowances"] == nil {
+		return nil, nil
+	}
+
+	vL := m["bypass_pull_request_allowances"].([]interface{})
+	if len(vL) > 1 {
+		return nil, errors.New("cannot specify bypass_pull_request_allowances more than one time")
+	}
+
+	var bpra *github.BypassPullRequestAllowancesRequest
+
+	for _, v := range vL {
+		if v == nil {
+			return nil, errors.New("invalid bypass_pull_request_allowances")
+		}
+		bpra = new(github.BypassPullRequestAllowancesRequest)
+		m := v.(map[string]interface{})
+
+		users := expandNestedSet(m, "users")
+		bpra.Users = users
+		teams := expandNestedSet(m, "teams")
+		bpra.Teams = teams
+		apps := expandNestedSet(m, "apps")
+		bpra.Apps = apps
+	}
+
+	return bpra, nil
 }
 
 func checkBranchRestrictionsUsers(actual *github.BranchRestrictions, expected *github.BranchRestrictionsRequest) error {
