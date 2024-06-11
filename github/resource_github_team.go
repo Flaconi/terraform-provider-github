@@ -5,12 +5,24 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/go-github/v57/github"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/shurcooL/githubv4"
 )
+
+/*
+These constants are used to retry API on various operations.
+This is required because Terraform apply/destroy runs in parallel and when
+looping through a module or resource a team name could have been changed by another thread,
+a parent team could have been removed or various other parallel issues.
+To mitigate this, we're simply retrying the API to double check its actual state.
+See their corresponding for loops for further description.
+*/
+const github_team_api_retry = 30
+const github_team_api_wait = 5
 
 func resourceGithubTeam() *schema.Resource {
 	return &schema.Resource{
@@ -125,8 +137,26 @@ func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	if parentTeamID, ok := d.GetOk("parent_team_id"); ok {
+		/*
+			When creating nested teams via Terraform by looping through a module or resource
+			the parent team might not have been created yet (in "terraform apply" parallel runs),
+			so we are giving it some time to create the parent team and will repeatedly check
+			if the parent exists (has been created by another parallel run).
+		*/
 		teamId, err := getTeamID(parentTeamID.(string), meta)
+		for i := 0; i < github_team_api_retry; i++ {
+			// Try again on error
+			if err != nil {
+				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
+				time.Sleep(github_team_api_wait * time.Second)
+				teamId, err = getTeamID(parentTeamID.(string), meta)
+				continue
+			}
+			// Exit loop on success
+			break
+		}
 		if err != nil {
+			log.Printf("[ERROR] Unable to find parent team")
 			return err
 		}
 		newTeam.ParentTeamID = &teamId
@@ -194,7 +224,45 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 		ctx = context.WithValue(ctx, ctxEtag, d.Get("etag").(string))
 	}
 
+	/*
+		Slug-name specific (as opposed to using team ID):
+		When using slug-name to read GitHub teams it could be that another parallel thread of TF
+		(when looping through a module or resource) still needs to apply changes (rename the team name)
+		and thus it could be that we don't find it right away.
+		In order to mitigate this, we will loop this call and give the API a sane waiting time, hoping
+		the other thread has finished renaming the team in the mean time.
+	*/
+	log.Printf("[DEBUG] Reading team: %s", d.Id())
 	team, resp, err := client.Teams.GetTeamByID(ctx, orgId, id)
+	for i := 0; i < github_team_api_retry; i++ {
+		if err != nil {
+			if ghErr, ok := err.(*github.ErrorResponse); ok {
+				if ghErr.Response.StatusCode == http.StatusNotModified {
+					return nil
+				}
+				// HTTP 422 (GH Response Validation Failed)
+				// This is a valid error and we should break the loop here
+				if ghErr.Response.StatusCode == http.StatusUnprocessableEntity {
+					return err
+				}
+				// When using slug-name instead of ID, the new team name might not have been changed
+				// so we need to include this in the loop.
+				if ghErr.Response.StatusCode == http.StatusNotFound {
+					log.Printf("[WARN] Looking up team: Retry on 404 (%d/%d)", i, github_team_api_retry)
+					time.Sleep(github_team_api_wait * time.Second)
+					team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
+					continue
+				}
+				log.Printf("[WARN] Looking up team: Retry on error (%d/%d)", i, github_team_api_retry)
+				time.Sleep(github_team_api_wait * time.Second)
+				team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
+				continue
+			}
+			return err
+		}
+		// Exit loop on success
+		break
+	}
 	if err != nil {
 		if ghErr, ok := err.(*github.ErrorResponse); ok {
 			if ghErr.Response.StatusCode == http.StatusNotModified {
@@ -247,8 +315,28 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 		Privacy:     github.String(d.Get("privacy").(string)),
 	}
 	if parentTeamID, ok := d.GetOk("parent_team_id"); ok {
+		/*
+			Slug-name specific (as opposed to using team ID):
+			When updating nested teams via Terraform by looping through a module or resource
+			the parent team might not have been updated by a new slug-name yet
+			(in "terraform apply" parallel runs), so we are giving it some time to create the parent
+			team and will repeatedly check if the parent exists
+			(has been created by another parallel run).
+		*/
 		teamId, err := getTeamID(parentTeamID.(string), meta)
+		for i := 0; i < github_team_api_retry; i++ {
+			// Try again on error
+			if err != nil {
+				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
+				time.Sleep(github_team_api_wait * time.Second)
+				teamId, err = getTeamID(parentTeamID.(string), meta)
+				continue
+			}
+			// Exit loop on success
+			break
+		}
 		if err != nil {
+			log.Printf("[ERROR] Unable to find parent team")
 			return err
 		}
 		editedTeam.ParentTeamID = &teamId
