@@ -13,11 +13,9 @@ import (
 	"go/token"
 	"go/types"
 	"strconv"
-)
 
-// DiagnoseFuzzTests controls whether the 'tests' analyzer diagnoses fuzz tests
-// in Go 1.18+.
-var DiagnoseFuzzTests bool = false
+	"golang.org/x/tools/internal/aliases"
+)
 
 func TypeErrorEndPos(fset *token.FileSet, src []byte, start token.Pos) token.Pos {
 	// Get the end position for the type error.
@@ -32,7 +30,10 @@ func TypeErrorEndPos(fset *token.FileSet, src []byte, start token.Pos) token.Pos
 }
 
 func ZeroValue(f *ast.File, pkg *types.Package, typ types.Type) ast.Expr {
-	under := typ
+	// TODO(adonovan): think about generics, and also generic aliases.
+	under := aliases.Unalias(typ)
+	// Don't call Underlying unconditionally: although it removed
+	// Named and Alias, it also removes TypeParam.
 	if n, ok := typ.(*types.Named); ok {
 		under = n.Underlying()
 	}
@@ -46,7 +47,7 @@ func ZeroValue(f *ast.File, pkg *types.Package, typ types.Type) ast.Expr {
 		case u.Info()&types.IsString != 0:
 			return &ast.BasicLit{Kind: token.STRING, Value: `""`}
 		default:
-			panic("unknown basic type")
+			panic(fmt.Sprintf("unknown basic type %v", u))
 		}
 	case *types.Chan, *types.Interface, *types.Map, *types.Pointer, *types.Signature, *types.Slice, *types.Array:
 		return ast.NewIdent("nil")
@@ -154,6 +155,10 @@ func TypeExpr(f *ast.File, pkg *types.Package, typ types.Type) ast.Expr {
 					},
 				},
 			})
+		}
+		if t.Variadic() {
+			last := params[len(params)-1]
+			last.Type = &ast.Ellipsis{Elt: last.Type.(*ast.ArrayType).Elt}
 		}
 		var returns []*ast.Field
 		for i := 0; i < t.Results().Len(); i++ {

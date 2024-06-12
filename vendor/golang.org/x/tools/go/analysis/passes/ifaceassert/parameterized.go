@@ -7,6 +7,7 @@ package ifaceassert
 import (
 	"go/types"
 
+	"golang.org/x/tools/internal/aliases"
 	"golang.org/x/tools/internal/typeparams"
 )
 
@@ -67,7 +68,7 @@ func (w *tpWalker) isParameterized(typ types.Type) (res bool) {
 		// of a generic function type (or an interface method) that is
 		// part of the type we're testing. We don't care about these type
 		// parameters.
-		// Similarly, the receiver of a method may declare (rather then
+		// Similarly, the receiver of a method may declare (rather than
 		// use) type parameters, we don't care about those either.
 		// Thus, we only need to look at the input and result parameters.
 		return w.isParameterized(t.Params()) || w.isParameterized(t.Results())
@@ -94,15 +95,19 @@ func (w *tpWalker) isParameterized(typ types.Type) (res bool) {
 	case *types.Chan:
 		return w.isParameterized(t.Elem())
 
+	case *aliases.Alias:
+		// TODO(adonovan): think about generic aliases.
+		return w.isParameterized(aliases.Unalias(t))
+
 	case *types.Named:
-		list := typeparams.NamedTypeArgs(t)
+		list := t.TypeArgs()
 		for i, n := 0, list.Len(); i < n; i++ {
 			if w.isParameterized(list.At(i)) {
 				return true
 			}
 		}
 
-	case *typeparams.TypeParam:
+	case *types.TypeParam:
 		return true
 
 	default:

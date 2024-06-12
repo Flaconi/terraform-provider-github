@@ -2,49 +2,29 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package unusedwrite checks for unused writes to the elements of a struct or array object.
 package unusedwrite
 
 import (
+	_ "embed"
 	"fmt"
 	"go/types"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
+	"golang.org/x/tools/go/analysis/passes/internal/analysisutil"
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/internal/aliases"
 )
 
-// Doc is a documentation string.
-const Doc = `checks for unused writes
-
-The analyzer reports instances of writes to struct fields and
-arrays that are never read. Specifically, when a struct object
-or an array is copied, its elements are copied implicitly by
-the compiler, and any element write to this copy does nothing
-with the original object.
-
-For example:
-
-	type T struct { x int }
-	func f(input []T) {
-		for i, v := range input {  // v is a copy
-			v.x = i  // unused write to field x
-		}
-	}
-
-Another example is about non-pointer receiver:
-
-	type T struct { x int }
-	func (t T) f() {  // t is a copy
-		t.x = i  // unused write to field x
-	}
-`
+//go:embed doc.go
+var doc string
 
 // Analyzer reports instances of writes to struct fields and arrays
 // that are never read.
 var Analyzer = &analysis.Analyzer{
 	Name:     "unusedwrite",
-	Doc:      Doc,
+	Doc:      analysisutil.MustExtractDoc(doc, "unusedwrite"),
+	URL:      "https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/unusedwrite",
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 	Run:      run,
 }
@@ -145,10 +125,7 @@ func isDeadStore(store *ssa.Store, obj ssa.Value, addr ssa.Instruction) bool {
 
 // isStructOrArray returns whether the underlying type is struct or array.
 func isStructOrArray(tp types.Type) bool {
-	if named, ok := tp.(*types.Named); ok {
-		tp = named.Underlying()
-	}
-	switch tp.(type) {
+	switch tp.Underlying().(type) {
 	case *types.Array:
 		return true
 	case *types.Struct:
@@ -166,7 +143,7 @@ func hasStructOrArrayType(v ssa.Value) bool {
 			//   func (t T) f() { ...}
 			// the receiver object is of type *T:
 			//   t0 = local T (t)   *T
-			if tp, ok := alloc.Type().(*types.Pointer); ok {
+			if tp, ok := aliases.Unalias(alloc.Type()).(*types.Pointer); ok {
 				return isStructOrArray(tp.Elem())
 			}
 			return false
@@ -180,13 +157,14 @@ func hasStructOrArrayType(v ssa.Value) bool {
 //
 // For example, for struct T {x int, y int), getFieldName(*T, 1) returns "y".
 func getFieldName(tp types.Type, index int) string {
-	if pt, ok := tp.(*types.Pointer); ok {
+	// TODO(adonovan): use
+	//   stp, ok := typeparams.Deref(tp).Underlying().(*types.Struct); ok {
+	// when Deref is defined. But see CL 565456 for a better fix.
+
+	if pt, ok := aliases.Unalias(tp).(*types.Pointer); ok {
 		tp = pt.Elem()
 	}
-	if named, ok := tp.(*types.Named); ok {
-		tp = named.Underlying()
-	}
-	if stp, ok := tp.(*types.Struct); ok {
+	if stp, ok := tp.Underlying().(*types.Struct); ok {
 		return stp.Field(index).Name()
 	}
 	return fmt.Sprintf("%d", index)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/golangci/golangci-lint/internal/pkgcache"
 	"github.com/golangci/golangci-lint/pkg/lint/linter"
+	"github.com/golangci/golangci-lint/pkg/logutils"
 	"github.com/golangci/golangci-lint/pkg/result"
 	"github.com/golangci/golangci-lint/pkg/timeutils"
 )
@@ -28,7 +29,7 @@ type runAnalyzersConfig interface {
 }
 
 func runAnalyzers(cfg runAnalyzersConfig, lintCtx *linter.Context) ([]result.Issue, error) {
-	log := lintCtx.Log.Child("goanalysis")
+	log := lintCtx.Log.Child(logutils.DebugKeyGoAnalysis)
 	sw := timeutils.NewStopwatch("analyzers", log)
 
 	const stagesToPrint = 10
@@ -123,7 +124,8 @@ func getIssuesCacheKey(analyzers []*analysis.Analyzer) string {
 }
 
 func saveIssuesToCache(allPkgs []*packages.Package, pkgsFromCache map[*packages.Package]bool,
-	issues []result.Issue, lintCtx *linter.Context, analyzers []*analysis.Analyzer) {
+	issues []result.Issue, lintCtx *linter.Context, analyzers []*analysis.Analyzer,
+) {
 	startedAt := time.Now()
 	perPkgIssues := map[*packages.Package][]result.Issue{}
 	for ind := range issues {
@@ -150,6 +152,7 @@ func saveIssuesToCache(allPkgs []*packages.Package, pkgsFromCache map[*packages.
 					encodedIssues = append(encodedIssues, EncodingIssue{
 						FromLinter:           i.FromLinter,
 						Text:                 i.Text,
+						Severity:             i.Severity,
 						Pos:                  i.Pos,
 						LineRange:            i.LineRange,
 						Replacement:          i.Replacement,
@@ -181,9 +184,9 @@ func saveIssuesToCache(allPkgs []*packages.Package, pkgsFromCache map[*packages.
 	issuesCacheDebugf("Saved %d issues from %d packages to cache in %s", savedIssuesCount, len(allPkgs), time.Since(startedAt))
 }
 
-//nolint:gocritic
 func loadIssuesFromCache(pkgs []*packages.Package, lintCtx *linter.Context,
-	analyzers []*analysis.Analyzer) ([]result.Issue, map[*packages.Package]bool) {
+	analyzers []*analysis.Analyzer,
+) (issuesFromCache []result.Issue, pkgsFromCache map[*packages.Package]bool) {
 	startedAt := time.Now()
 
 	lintResKey := getIssuesCacheKey(analyzers)
@@ -217,16 +220,18 @@ func loadIssuesFromCache(pkgs []*packages.Package, lintCtx *linter.Context,
 				}
 
 				issues := make([]result.Issue, 0, len(pkgIssues))
-				for _, i := range pkgIssues {
+				for i := range pkgIssues {
+					issue := &pkgIssues[i]
 					issues = append(issues, result.Issue{
-						FromLinter:           i.FromLinter,
-						Text:                 i.Text,
-						Pos:                  i.Pos,
-						LineRange:            i.LineRange,
-						Replacement:          i.Replacement,
+						FromLinter:           issue.FromLinter,
+						Text:                 issue.Text,
+						Severity:             issue.Severity,
+						Pos:                  issue.Pos,
+						LineRange:            issue.LineRange,
+						Replacement:          issue.Replacement,
 						Pkg:                  pkg,
-						ExpectNoLint:         i.ExpectNoLint,
-						ExpectedNoLintLinter: i.ExpectedNoLintLinter,
+						ExpectNoLint:         issue.ExpectNoLint,
+						ExpectedNoLintLinter: issue.ExpectedNoLintLinter,
 					})
 				}
 				cacheRes.issues = issues
@@ -241,13 +246,12 @@ func loadIssuesFromCache(pkgs []*packages.Package, lintCtx *linter.Context,
 	wg.Wait()
 
 	loadedIssuesCount := 0
-	var issues []result.Issue
-	pkgsFromCache := map[*packages.Package]bool{}
+	pkgsFromCache = map[*packages.Package]bool{}
 	for pkg, cacheRes := range pkgToCacheRes {
 		if cacheRes.loadErr == nil {
 			loadedIssuesCount += len(cacheRes.issues)
 			pkgsFromCache[pkg] = true
-			issues = append(issues, cacheRes.issues...)
+			issuesFromCache = append(issuesFromCache, cacheRes.issues...)
 			issuesCacheDebugf("Loaded package %s issues (%d) from cache", pkg, len(cacheRes.issues))
 		} else {
 			issuesCacheDebugf("Didn't load package %s issues from cache: %s", pkg, cacheRes.loadErr)
@@ -255,7 +259,7 @@ func loadIssuesFromCache(pkgs []*packages.Package, lintCtx *linter.Context,
 	}
 	issuesCacheDebugf("Loaded %d issues from cache in %s, analyzing %d/%d packages",
 		loadedIssuesCount, time.Since(startedAt), len(pkgs)-len(pkgsFromCache), len(pkgs))
-	return issues, pkgsFromCache
+	return issuesFromCache, pkgsFromCache
 }
 
 func analyzersHashID(analyzers []*analysis.Analyzer) string {

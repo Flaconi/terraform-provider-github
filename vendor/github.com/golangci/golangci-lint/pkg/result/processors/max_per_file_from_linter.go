@@ -5,8 +5,10 @@ import (
 	"github.com/golangci/golangci-lint/pkg/result"
 )
 
-type linterToCountMap map[string]int
-type fileToLinterToCountMap map[string]linterToCountMap
+type (
+	linterToCountMap       map[string]int
+	fileToLinterToCountMap map[string]linterToCountMap
+)
 
 type MaxPerFileFromLinter struct {
 	flc                        fileToLinterToCountMap
@@ -31,29 +33,29 @@ func NewMaxPerFileFromLinter(cfg *config.Config) *MaxPerFileFromLinter {
 	}
 }
 
-func (p MaxPerFileFromLinter) Name() string {
+func (p *MaxPerFileFromLinter) Name() string {
 	return "max_per_file_from_linter"
 }
 
 func (p *MaxPerFileFromLinter) Process(issues []result.Issue) ([]result.Issue, error) {
-	return filterIssues(issues, func(i *result.Issue) bool {
-		limit := p.maxPerFileFromLinterConfig[i.FromLinter]
+	return filterIssues(issues, func(issue *result.Issue) bool {
+		limit := p.maxPerFileFromLinterConfig[issue.FromLinter]
 		if limit == 0 {
 			return true
 		}
 
-		lm := p.flc[i.FilePath()]
+		lm := p.flc[issue.FilePath()]
 		if lm == nil {
-			p.flc[i.FilePath()] = linterToCountMap{}
+			p.flc[issue.FilePath()] = linterToCountMap{}
 		}
-		count := p.flc[i.FilePath()][i.FromLinter]
+		count := p.flc[issue.FilePath()][issue.FromLinter]
 		if count >= limit {
 			return false
 		}
 
-		p.flc[i.FilePath()][i.FromLinter]++
+		p.flc[issue.FilePath()][issue.FromLinter]++
 		return true
 	}), nil
 }
 
-func (p MaxPerFileFromLinter) Finish() {}
+func (p *MaxPerFileFromLinter) Finish() {}
