@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/go-github/v57/github"
+	"github.com/google/go-github/v66/github"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/shurcooL/githubv4"

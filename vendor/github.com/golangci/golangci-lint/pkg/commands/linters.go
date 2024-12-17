@@ -58,10 +58,11 @@ func newLintersCommand(logger logutils.Log) *lintersCommand {
 	return c
 }
 
-func (c *lintersCommand) preRunE(cmd *cobra.Command, _ []string) error {
-	loader := config.NewLoader(c.log.Child(logutils.DebugKeyConfigReader), c.viper, cmd.Flags(), c.opts.LoaderOptions, c.cfg)
+func (c *lintersCommand) preRunE(cmd *cobra.Command, args []string) error {
+	loader := config.NewLoader(c.log.Child(logutils.DebugKeyConfigReader), c.viper, cmd.Flags(), c.opts.LoaderOptions, c.cfg, args)
 
-	if err := loader.Load(); err != nil {
+	err := loader.Load(config.LoadOptions{Validation: true})
+	if err != nil {
 		return fmt.Errorf("can't load config: %w", err)
 	}
 
