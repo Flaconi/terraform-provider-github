@@ -22,8 +22,10 @@ a parent team could have been removed or various other parallel issues.
 To mitigate this, we're simply retrying the API to double check its actual state.
 See their corresponding for loops for further description.
 */
-const github_team_api_retry = 30
-const github_team_api_wait = 5
+const (
+	github_team_api_retry = 30
+	github_team_api_wait  = 5
+)
 
 func resourceGithubTeam() *schema.Resource {
 	return &schema.Resource{
@@ -155,7 +157,7 @@ func resourceGithubTeamCreate(ctx context.Context, d *schema.ResourceData, m any
 			if the parent exists (has been created by another parallel run).
 		*/
 		teamId, err := getTeamID(ctx, meta, parentTeamID.(string))
-		for i := 0; i < github_team_api_retry; i++ {
+		for i := range github_team_api_retry {
 			// Try again on error
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
@@ -278,9 +280,10 @@ func resourceGithubTeamRead(ctx context.Context, d *schema.ResourceData, meta an
 	*/
 	log.Printf("[DEBUG] Reading team: %s", d.Id())
 	team, resp, err := client.Teams.GetTeamByID(ctx, orgId, id)
-	for i := 0; i < github_team_api_retry; i++ {
+	for i := range github_team_api_retry {
 		if err != nil {
-			if ghErr, ok := err.(*github.ErrorResponse); ok {
+			var ghErr *github.ErrorResponse
+			if errors.As(err, &ghErr) {
 				if ghErr.Response.StatusCode == http.StatusNotModified {
 					return nil
 				}
@@ -402,7 +405,7 @@ func resourceGithubTeamUpdate(ctx context.Context, d *schema.ResourceData, m any
 			(has been created by another parallel run).
 		*/
 		teamId, err := getTeamID(ctx, meta, parentTeamID.(string))
-		for i := 0; i < github_team_api_retry; i++ {
+		for i := range github_team_api_retry {
 			// Try again on error
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
