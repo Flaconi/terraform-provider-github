@@ -1,4 +1,4 @@
-Terraform Provider GitHub
+# Terraform Provider GitHub
 =========================
 
 <img src="https://cloud.githubusercontent.com/assets/98681/24211275/c4ebd04e-0ee8-11e7-8606-061d656a42df.png" width="72" height="">
@@ -14,8 +14,8 @@ This is a flaconi flavoured provider based on [integrations/github](https://gith
 
 ## Requirements
 
--	[Terraform](https://www.terraform.io/downloads.html) 0.10.x
--	[Go](https://golang.org/doc/install) 1.19.x (to build the provider plugin)
+- [Terraform](https://www.terraform.io/downloads.html) 1.x
+- [Go](https://golang.org/doc/install) 1.26.x (to build the provider plugin)
 
 ## Usage
 
@@ -31,4 +31,4 @@ This project uses [Milestones](https://github.com/integrations/terraform-provide
 
 ## Support
 
-This is a community-supported project. GitHub's SDK team triages issues and PRs each Monday and Friday. Please engage with the community via Issues for support, and PRs are always welcome!
+GitHub Support does not provide support for this integration. This is a community-supported project. GitHub's SDK team triages issues and PRs periodically.

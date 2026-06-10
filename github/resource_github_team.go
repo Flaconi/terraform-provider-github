@@ -2,15 +2,16 @@ package github
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/google/go-github/v66/github"
+	"github.com/google/go-github/v85/github"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/shurcooL/githubv4"
 )
 
 /*
@@ -21,21 +22,23 @@ a parent team could have been removed or various other parallel issues.
 To mitigate this, we're simply retrying the API to double check its actual state.
 See their corresponding for loops for further description.
 */
-const github_team_api_retry = 30
-const github_team_api_wait = 5
+const (
+	github_team_api_retry = 30
+	github_team_api_wait  = 5
+)
 
 func resourceGithubTeam() *schema.Resource {
 	return &schema.Resource{
-		Create: resourceGithubTeamCreate,
-		Read:   resourceGithubTeamRead,
-		Update: resourceGithubTeamUpdate,
-		Delete: resourceGithubTeamDelete,
+		CreateContext: resourceGithubTeamCreate,
+		ReadContext:   resourceGithubTeamRead,
+		UpdateContext: resourceGithubTeamUpdate,
+		DeleteContext: resourceGithubTeamDelete,
 		Importer: &schema.ResourceImporter{
-			State: resourceGithubTeamImport,
+			StateContext: resourceGithubTeamImport,
 		},
 
 		CustomizeDiff: customdiff.Sequence(
-			customdiff.ComputedIf("slug", func(_ context.Context, d *schema.ResourceDiff, meta interface{}) bool {
+			customdiff.ComputedIf("slug", func(_ context.Context, d *schema.ResourceDiff, meta any) bool {
 				return d.HasChange("name")
 			}),
 		),
@@ -58,17 +61,45 @@ func resourceGithubTeam() *schema.Resource {
 				Description:      "The level of privacy for the team. Must be one of 'secret' or 'closed'.",
 				ValidateDiagFunc: validateValueFunc([]string{"secret", "closed"}),
 			},
+			"notification_setting": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          "notifications_enabled",
+				Description:      "The notification setting for the team. Must be one of 'notifications_enabled' or 'notifications_disabled'.",
+				ValidateDiagFunc: validateValueFunc([]string{"notifications_enabled", "notifications_disabled"}),
+			},
 			"parent_team_id": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Default:     "",
 				Description: "The ID or slug of the parent team, if this is a nested team.",
-				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+				DiffSuppressFunc: func(k, o, n string, d *schema.ResourceData) bool {
 					if d.Get("parent_team_id") == d.Get("parent_team_read_id") || d.Get("parent_team_id") == d.Get("parent_team_read_slug") {
 						return true
 					}
 					return false
 				},
+			},
+			"ldap_dn": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "The LDAP Distinguished Name of the group where membership will be synchronized. Only available in GitHub Enterprise Server.",
+			},
+			"create_default_maintainer": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "Adds a default maintainer to the team. Adds the creating user to the team when 'true'.",
+				Deprecated:  "Use github_team_membership or github_team_members resource to manage team memberships explicitly.",
+			},
+			"slug": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "The slug of the created team.",
+			},
+			"members_count": {
+				Type:     schema.TypeInt,
+				Computed: true,
 			},
 			"parent_team_read_id": {
 				Type:        schema.TypeString,
@@ -82,54 +113,36 @@ func resourceGithubTeam() *schema.Resource {
 				Computed:    true,
 				Description: "The id of the parent team read in Github.",
 			},
-			"ldap_dn": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Description: "The LDAP Distinguished Name of the group where membership will be synchronized. Only available in GitHub Enterprise Server.",
-			},
-			"create_default_maintainer": {
-				Type:        schema.TypeBool,
-				Optional:    true,
-				Default:     false,
-				Description: "Adds a default maintainer to the team. Adds the creating user to the team when 'true'.",
-			},
-			"slug": {
-				Type:        schema.TypeString,
-				Computed:    true,
-				Description: "The slug of the created team.",
-			},
-			"etag": {
-				Type:     schema.TypeString,
-				Computed: true,
-			},
 			"node_id": {
 				Type:        schema.TypeString,
 				Computed:    true,
 				Description: "The Node ID of the created team.",
 			},
-			"members_count": {
-				Type:     schema.TypeInt,
+			"etag": {
+				Type:     schema.TypeString,
 				Computed: true,
 			},
 		},
 	}
 }
 
-func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceGithubTeamCreate(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	meta := m.(*Owner)
+	client := meta.v3client
+	ownerName := meta.name
+
 	err := checkOrganization(meta)
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 
-	client := meta.(*Owner).v3client
-
-	ownerName := meta.(*Owner).name
 	name := d.Get("name").(string)
 
 	newTeam := github.NewTeam{
-		Name:        name,
-		Description: github.String(d.Get("description").(string)),
-		Privacy:     github.String(d.Get("privacy").(string)),
+		Name:                name,
+		Description:         new(d.Get("description").(string)),
+		Privacy:             new(d.Get("privacy").(string)),
+		NotificationSetting: new(d.Get("notification_setting").(string)),
 	}
 
 	if ldapDN := d.Get("ldap_dn").(string); ldapDN != "" {
@@ -143,13 +156,13 @@ func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
 			so we are giving it some time to create the parent team and will repeatedly check
 			if the parent exists (has been created by another parallel run).
 		*/
-		teamId, err := getTeamID(parentTeamID.(string), meta)
-		for i := 0; i < github_team_api_retry; i++ {
+		teamId, err := getTeamID(ctx, meta, parentTeamID.(string))
+		for i := range github_team_api_retry {
 			// Try again on error
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
-				teamId, err = getTeamID(parentTeamID.(string), meta)
+				teamId, err = getTeamID(ctx, meta, parentTeamID.(string))
 				continue
 			}
 			// Exit loop on success
@@ -157,17 +170,18 @@ func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
 		}
 		if err != nil {
 			log.Printf("[ERROR] Unable to find parent team")
-			return err
+			return diag.FromErr(err)
 		}
 		newTeam.ParentTeamID = &teamId
 	}
-	ctx := context.Background()
 
-	githubTeam, _, err := client.Teams.CreateTeam(ctx,
-		ownerName, newTeam)
+	team, resp, err := client.Teams.CreateTeam(ctx, ownerName, newTeam)
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
+
+	slug := team.GetSlug()
+	membersCount := team.GetMembersCount()
 
 	/*
 		When using a GitHub App for authentication, `members:write` permissions on the App are needed.
@@ -182,34 +196,66 @@ func resourceGithubTeamCreate(d *schema.ResourceData, meta interface{}) error {
 		Note that this is best-effort: when running this with a PAT that does not have admin permissions
 		on the parent team, the operation might still fail to set the parent team.
 	*/
-	if newTeam.ParentTeamID != nil && githubTeam.Parent == nil {
-		_, _, err := client.Teams.EditTeamByID(ctx,
-			*githubTeam.Organization.ID,
-			*githubTeam.ID,
-			newTeam,
-			false)
-
+	if newTeam.ParentTeamID != nil && team.Parent == nil {
+		_, resp, err = client.Teams.EditTeamBySlug(ctx, ownerName, slug, newTeam, false)
 		if err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 	}
 
 	create_default_maintainer := d.Get("create_default_maintainer").(bool)
-	if !create_default_maintainer {
+	if !create_default_maintainer && membersCount > 0 {
 		log.Printf("[DEBUG] Removing default maintainer from team: %s (%s)", name, ownerName)
-		if err := removeDefaultMaintainer(*githubTeam.Slug, meta); err != nil {
-			return err
+		err := removeTeamMembers(ctx, client, ownerName, slug)
+		if err != nil {
+			return diag.FromErr(err)
 		}
+
+		membersCount = 0
 	}
 
-	d.SetId(strconv.FormatInt(githubTeam.GetID(), 10))
-	return resourceGithubTeamRead(d, meta)
+	d.SetId(strconv.FormatInt(team.GetID(), 10))
+	if err = d.Set("slug", team.GetSlug()); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("members_count", membersCount); err != nil {
+		return diag.FromErr(err)
+	}
+	if parent := team.Parent; parent != nil {
+		if err = d.Set("parent_team_id", strconv.FormatInt(team.Parent.GetID(), 10)); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_id", strconv.FormatInt(team.Parent.GetID(), 10)); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_slug", parent.Slug); err != nil {
+			return diag.FromErr(err)
+		}
+	} else {
+		if err = d.Set("parent_team_id", ""); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_id", ""); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_slug", ""); err != nil {
+			return diag.FromErr(err)
+		}
+	}
+	if err = d.Set("node_id", team.GetNodeID()); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("etag", resp.Header.Get("ETag")); err != nil {
+		return diag.FromErr(err)
+	}
+
+	return nil
 }
 
-func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
+func resourceGithubTeamRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	err := checkOrganization(meta)
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 
 	client := meta.(*Owner).v3client
@@ -217,9 +263,9 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 
 	id, err := strconv.ParseInt(d.Id(), 10, 64)
 	if err != nil {
-		return unconvertibleIdErr(d.Id(), err)
+		return diag.FromErr(unconvertibleIdErr(d.Id(), err))
 	}
-	ctx := context.WithValue(context.Background(), ctxId, d.Id())
+
 	if !d.IsNewResource() {
 		ctx = context.WithValue(ctx, ctxEtag, d.Get("etag").(string))
 	}
@@ -234,16 +280,17 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 	*/
 	log.Printf("[DEBUG] Reading team: %s", d.Id())
 	team, resp, err := client.Teams.GetTeamByID(ctx, orgId, id)
-	for i := 0; i < github_team_api_retry; i++ {
+	for i := range github_team_api_retry {
 		if err != nil {
-			if ghErr, ok := err.(*github.ErrorResponse); ok {
+			var ghErr *github.ErrorResponse
+			if errors.As(err, &ghErr) {
 				if ghErr.Response.StatusCode == http.StatusNotModified {
 					return nil
 				}
 				// HTTP 422 (GH Response Validation Failed)
 				// This is a valid error and we should break the loop here
 				if ghErr.Response.StatusCode == http.StatusUnprocessableEntity {
-					return err
+					return diag.FromErr(err)
 				}
 				// When using slug-name instead of ID, the new team name might not have been changed
 				// so we need to include this in the loop.
@@ -258,13 +305,14 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 				team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
 				continue
 			}
-			return err
+			return diag.FromErr(err)
 		}
 		// Exit loop on success
 		break
 	}
 	if err != nil {
-		if ghErr, ok := err.(*github.ErrorResponse); ok {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) {
 			if ghErr.Response.StatusCode == http.StatusNotModified {
 				return nil
 			}
@@ -275,72 +323,77 @@ func resourceGithubTeamRead(d *schema.ResourceData, meta interface{}) error {
 				return nil
 			}
 		}
-		return err
+		return diag.FromErr(err)
 	}
 
-	if err = d.Set("etag", resp.Header.Get("ETag")); err != nil {
-		return err
+	if err = d.Set("slug", team.GetSlug()); err != nil {
+		return diag.FromErr(err)
 	}
 	if err = d.Set("description", team.GetDescription()); err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 	if err = d.Set("name", team.GetName()); err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 	if err = d.Set("privacy", team.GetPrivacy()); err != nil {
-		return err
+		return diag.FromErr(err)
+	}
+	if err = d.Set("notification_setting", team.GetNotificationSetting()); err != nil {
+		return diag.FromErr(err)
 	}
 	if parent := team.Parent; parent != nil {
 		if err = d.Set("parent_team_id", strconv.FormatInt(team.Parent.GetID(), 10)); err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 		if err = d.Set("parent_team_read_id", strconv.FormatInt(team.Parent.GetID(), 10)); err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 		if err = d.Set("parent_team_read_slug", parent.Slug); err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 	} else {
 		if err = d.Set("parent_team_id", ""); err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 		if err = d.Set("parent_team_read_id", ""); err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 		if err = d.Set("parent_team_read_slug", ""); err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 	}
 	if err = d.Set("ldap_dn", team.GetLDAPDN()); err != nil {
-		return err
-	}
-	if err = d.Set("slug", team.GetSlug()); err != nil {
-		return err
-	}
-	if err = d.Set("node_id", team.GetNodeID()); err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 	if err = d.Set("members_count", team.GetMembersCount()); err != nil {
-		return err
+		return diag.FromErr(err)
+	}
+	if err = d.Set("node_id", team.GetNodeID()); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("etag", resp.Header.Get("ETag")); err != nil {
+		return diag.FromErr(err)
 	}
 
 	return nil
 }
 
-func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
+func resourceGithubTeamUpdate(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
+	meta := m.(*Owner)
+	client := meta.v3client
+	orgId := meta.id
+
 	err := checkOrganization(meta)
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 
-	client := meta.(*Owner).v3client
-	orgId := meta.(*Owner).id
 	var removeParentTeam bool
-
 	editedTeam := github.NewTeam{
-		Name:        d.Get("name").(string),
-		Description: github.String(d.Get("description").(string)),
-		Privacy:     github.String(d.Get("privacy").(string)),
+		Name:                d.Get("name").(string),
+		Description:         new(d.Get("description").(string)),
+		Privacy:             new(d.Get("privacy").(string)),
+		NotificationSetting: new(d.Get("notification_setting").(string)),
 	}
 	if parentTeamID, ok := d.GetOk("parent_team_id"); ok {
 		/*
@@ -351,13 +404,13 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 			team and will repeatedly check if the parent exists
 			(has been created by another parallel run).
 		*/
-		teamId, err := getTeamID(parentTeamID.(string), meta)
-		for i := 0; i < github_team_api_retry; i++ {
+		teamId, err := getTeamID(ctx, meta, parentTeamID.(string))
+		for i := range github_team_api_retry {
 			// Try again on error
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
-				teamId, err = getTeamID(parentTeamID.(string), meta)
+				teamId, err = getTeamID(ctx, meta, parentTeamID.(string))
 				continue
 			}
 			// Exit loop on success
@@ -365,7 +418,7 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 		}
 		if err != nil {
 			log.Printf("[ERROR] Unable to find parent team")
-			return err
+			return diag.FromErr(err)
 		}
 		editedTeam.ParentTeamID = &teamId
 		removeParentTeam = false
@@ -375,34 +428,67 @@ func resourceGithubTeamUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	teamId, err := strconv.ParseInt(d.Id(), 10, 64)
 	if err != nil {
-		return unconvertibleIdErr(d.Id(), err)
+		return diag.FromErr(unconvertibleIdErr(d.Id(), err))
 	}
-	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 
-	team, _, err := client.Teams.EditTeamByID(ctx, orgId, teamId, editedTeam, removeParentTeam)
+	team, resp, err := client.Teams.EditTeamByID(ctx, orgId, teamId, editedTeam, removeParentTeam)
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 
 	if d.HasChange("ldap_dn") {
 		ldapDN := d.Get("ldap_dn").(string)
 		mapping := &github.TeamLDAPMapping{
-			LDAPDN: github.String(ldapDN),
+			LDAPDN: new(ldapDN),
 		}
 		_, _, err = client.Admin.UpdateTeamLDAPMapping(ctx, team.GetID(), mapping)
 		if err != nil {
-			return err
+			return diag.FromErr(err)
 		}
 	}
 
 	d.SetId(strconv.FormatInt(team.GetID(), 10))
-	return resourceGithubTeamRead(d, meta)
+	if err = d.Set("slug", team.GetSlug()); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("members_count", team.GetMembersCount()); err != nil {
+		return diag.FromErr(err)
+	}
+	if parent := team.Parent; parent != nil {
+		if err = d.Set("parent_team_id", strconv.FormatInt(team.Parent.GetID(), 10)); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_id", strconv.FormatInt(team.Parent.GetID(), 10)); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_slug", parent.Slug); err != nil {
+			return diag.FromErr(err)
+		}
+	} else {
+		if err = d.Set("parent_team_id", ""); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_id", ""); err != nil {
+			return diag.FromErr(err)
+		}
+		if err = d.Set("parent_team_read_slug", ""); err != nil {
+			return diag.FromErr(err)
+		}
+	}
+	if err = d.Set("node_id", team.GetNodeID()); err != nil {
+		return diag.FromErr(err)
+	}
+	if err = d.Set("etag", resp.Header.Get("ETag")); err != nil {
+		return diag.FromErr(err)
+	}
+
+	return nil
 }
 
-func resourceGithubTeamDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceGithubTeamDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	err := checkOrganization(meta)
 	if err != nil {
-		return err
+		return diag.FromErr(err)
 	}
 
 	client := meta.(*Owner).v3client
@@ -410,9 +496,8 @@ func resourceGithubTeamDelete(d *schema.ResourceData, meta interface{}) error {
 
 	id, err := strconv.ParseInt(d.Id(), 10, 64)
 	if err != nil {
-		return unconvertibleIdErr(d.Id(), err)
+		return diag.FromErr(unconvertibleIdErr(d.Id(), err))
 	}
-	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 
 	_, err = client.Teams.DeleteTeamByID(ctx, orgId, id)
 	/*
@@ -422,12 +507,12 @@ func resourceGithubTeamDelete(d *schema.ResourceData, meta interface{}) error {
 		been deleted already (via parallel runs), the child team is also already gone (deleted by
 		GitHub automatically).
 		So we're checking if it still exists and if not, simply remove it from TF state.
-	*/
-	if err != nil {
+	*/if err != nil {
 		// Fetch the team in order to see if it exists or not (http 404)
 		_, _, err = client.Teams.GetTeamByID(ctx, orgId, id)
 		if err != nil {
-			if ghErr, ok := err.(*github.ErrorResponse); ok {
+			var ghErr *github.ErrorResponse
+			if errors.As(err, &ghErr) {
 				if ghErr.Response.StatusCode == http.StatusNotFound {
 					// If team we failed to delete does not exist, remove it from TF state.
 					log.Printf("[WARN] Removing team: %s from state because it no longer exists",
@@ -436,13 +521,16 @@ func resourceGithubTeamDelete(d *schema.ResourceData, meta interface{}) error {
 					return nil
 				}
 			}
+			return diag.FromErr(err)
 		}
 	}
-	return err
+	return nil
 }
 
-func resourceGithubTeamImport(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
-	teamId, err := getTeamID(d.Id(), meta)
+func resourceGithubTeamImport(ctx context.Context, d *schema.ResourceData, m any) ([]*schema.ResourceData, error) {
+	meta := m.(*Owner)
+
+	teamId, err := getTeamID(ctx, meta, d.Id())
 	if err != nil {
 		return nil, err
 	}
@@ -455,37 +543,14 @@ func resourceGithubTeamImport(d *schema.ResourceData, meta interface{}) ([]*sche
 	return []*schema.ResourceData{d}, nil
 }
 
-func removeDefaultMaintainer(teamSlug string, meta interface{}) error {
-
-	client := meta.(*Owner).v3client
-	orgName := meta.(*Owner).name
-	v4client := meta.(*Owner).v4client
-
-	type User struct {
-		Login githubv4.String
-	}
-
-	var query struct {
-		Organization struct {
-			Team struct {
-				Members struct {
-					Nodes []User
-				}
-			} `graphql:"team(slug:$slug)"`
-		} `graphql:"organization(login:$login)"`
-	}
-	variables := map[string]interface{}{
-		"slug":  githubv4.String(teamSlug),
-		"login": githubv4.String(orgName),
-	}
-
-	err := v4client.Query(meta.(*Owner).StopContext, &query, variables)
+func removeTeamMembers(ctx context.Context, client *github.Client, owner, slug string) error {
+	users, _, err := client.Teams.ListTeamMembersBySlug(ctx, owner, slug, &github.TeamListTeamMembersOptions{})
 	if err != nil {
 		return err
 	}
 
-	for _, user := range query.Organization.Team.Members.Nodes {
-		_, err := client.Teams.RemoveTeamMembershipBySlug(meta.(*Owner).StopContext, orgName, teamSlug, string(user.Login))
+	for _, user := range users {
+		_, err := client.Teams.RemoveTeamMembershipBySlug(ctx, owner, slug, user.GetLogin())
 		if err != nil {
 			return err
 		}
