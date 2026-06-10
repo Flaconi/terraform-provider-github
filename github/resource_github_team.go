@@ -287,7 +287,7 @@ func resourceGithubTeamRead(ctx context.Context, d *schema.ResourceData, meta an
 				// HTTP 422 (GH Response Validation Failed)
 				// This is a valid error and we should break the loop here
 				if ghErr.Response.StatusCode == http.StatusUnprocessableEntity {
-					return err
+					return diag.FromErr(err)
 				}
 				// When using slug-name instead of ID, the new team name might not have been changed
 				// so we need to include this in the loop.
@@ -302,7 +302,7 @@ func resourceGithubTeamRead(ctx context.Context, d *schema.ResourceData, meta an
 				team, resp, err = client.Teams.GetTeamByID(ctx, orgId, id)
 				continue
 			}
-			return err
+			return diag.FromErr(err)
 		}
 		// Exit loop on success
 		break
@@ -407,7 +407,7 @@ func resourceGithubTeamUpdate(ctx context.Context, d *schema.ResourceData, m any
 			if err != nil {
 				log.Printf("[WARN] Fetching parent team: Retry (%d/%d)", i, github_team_api_retry)
 				time.Sleep(github_team_api_wait * time.Second)
-				teamId, err := getTeamID(ctx, meta, parentTeamID.(string))
+				teamId, err = getTeamID(ctx, meta, parentTeamID.(string))
 				continue
 			}
 			// Exit loop on success
